@@ -44,13 +44,17 @@ RUN git clone https://github.com/NuSkooler/enigma-bbs.git /enigma-bbs \
     && rm -rf .git
 
 WORKDIR /enigma-bbs
-# --omit=dev: skip devDependencies (modern equivalent of --production).
-# --ignore-scripts: skip postinstall/prepare scripts. Specifically
-# needed because ENiGMA's package.json declares a `prepare: husky`
-# script for the maintainer's git hooks, and husky isn't available in
-# a --omit=dev install → npm errors out. We don't need git hooks in
-# a runtime image anyway.
-RUN npm install --omit=dev --ignore-scripts
+# ENiGMA's package.json declares a maintainer ``prepare: husky``
+# script (dev-time git hooks), which npm runs even with --omit=dev.
+# Husky is a devDependency → not present → npm errors out. Strip the
+# prepare script before install so we don't have to pull husky in.
+#
+# Do NOT use --ignore-scripts: that also skips better-sqlite3's
+# postinstall, which downloads (or builds) the native addon
+# ``better_sqlite3.node``. Without it ENiGMA crashes at boot with
+# 'Could not locate the bindings file'.
+RUN npm pkg delete scripts.prepare \
+    && npm install --omit=dev
 
 # Stage the default mods, art, and any bundled config fragments for
 # the entrypoint to copy into OPENHOST_APP_DATA_DIR on first run.
