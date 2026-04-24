@@ -83,6 +83,75 @@ if [ ! -f "${CONFIG_FILE}" ]; then
         seed_from_staging "${d}"
     done
 
+    # Assemble the menu file set by copying the upstream menu
+    # templates into config/menus/ with per-board filenames. This
+    # mirrors what ``./oputil.js config new`` does internally; we do
+    # it by hand because oputil is interactive and can't be driven
+    # from a non-TTY entrypoint. Keep ``board_slug`` aligned with the
+    # ``general.menuFile`` path we write into config.hjson below.
+    BOARD_NAME_SLUG=$(echo "${BBS_BOARD_NAME:-OpenHost BBS}" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed 's/[^a-z0-9_-]\+/_/g; s/_\+/_/g; s/^_//; s/_$//')
+    [ -z "${BOARD_NAME_SLUG}" ] && BOARD_NAME_SLUG="openhost_bbs"
+    MENUS_DIR="${DATA_DIR}/config/menus"
+    mkdir -p "${MENUS_DIR}"
+
+    # Copy the include files (everything except main.in.hjson) and
+    # remember their on-disk names so main.hjson's %INCLUDE_FILES%
+    # placeholder can be filled in.
+    INCLUDE_TEMPLATES=(
+        message_base.in.hjson
+        private_mail.in.hjson
+        login.in.hjson
+        new_user.in.hjson
+        doors.in.hjson
+        file_base.in.hjson
+        activitypub.in.hjson
+    )
+    INCLUDE_NAMES=()
+    for tpl in "${INCLUDE_TEMPLATES[@]}"; do
+        out_name="${BOARD_NAME_SLUG}-${tpl%.in.hjson}.hjson"
+        cp -n "${BBS_ROOT}/misc/menu_templates/${tpl}" "${MENUS_DIR}/${out_name}"
+        INCLUDE_NAMES+=("${out_name}")
+    done
+
+    # Build the main menu by substituting %INCLUDE_FILES% in the
+    # upstream template. Match oputil's substitution exactly: the
+    # replacement is the list of include filenames joined by a
+    # newline + two tabs, so the resulting hjson is valid.
+    #
+    # We do the substitution with awk because bash's parameter-
+    # expansion can't handle multi-line replacements cleanly (escape
+    # hell) and we'd rather not pull python3 into the runtime just
+    # for this.
+    MAIN_OUT="${MENUS_DIR}/${BOARD_NAME_SLUG}-main.hjson"
+    MAIN_TEMPLATE="${BBS_ROOT}/misc/menu_templates/main.in.hjson"
+
+    # Build include block as a real multi-line string.
+    INCLUDE_BLOCK=""
+    for inc in "${INCLUDE_NAMES[@]}"; do
+        if [ -z "${INCLUDE_BLOCK}" ]; then
+            INCLUDE_BLOCK="${inc}"
+        else
+            # Literal tab characters for indentation inside the
+            # hjson array.
+            INCLUDE_BLOCK=$(printf '%s\n\t\t%s' "${INCLUDE_BLOCK}" "${inc}")
+        fi
+    done
+    export INCLUDE_BLOCK
+    awk '
+        /%INCLUDE_FILES%/ {
+            # Split the current line at the placeholder and emit the
+            # block from the env var between the two halves.
+            idx = index($0, "%INCLUDE_FILES%")
+            printf "%s", substr($0, 1, idx - 1)
+            printf "%s", ENVIRON["INCLUDE_BLOCK"]
+            printf "%s\n", substr($0, idx + length("%INCLUDE_FILES%"))
+            next
+        }
+        { print }
+    ' "${MAIN_TEMPLATE}" > "${MAIN_OUT}"
+
     # Generate a random sysop password and stash it where the operator
     # can find it after deploy. We don't print it to stdout because the
     # OpenHost build log is surfaced in the UI and we don't want the
@@ -119,6 +188,9 @@ EOF
     general: {
         boardName: "${BBS_BOARD_NAME:-OpenHost BBS}"
         prettyBoardName: "|09Open|15Host |13BBS"
+        // Path to the main menu file the entrypoint assembled from
+        // the upstream menu_templates on first run.
+        menuFile: "/enigma-bbs/config/menus/${BOARD_NAME_SLUG}-main.hjson"
         sysOp: {
             username: "sysop"
             realName: "${BBS_SYSOP_NAME:-Sysop}"
