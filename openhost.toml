@@ -1,0 +1,42 @@
+[app]
+name = "bbs"
+version = "0.1.0"
+description = "Classic BBS (ENiGMA½) for OpenHost — telnet + SSH access"
+
+[runtime]
+type = "serverfull"
+
+[runtime.container]
+image = "Dockerfile"
+# ENiGMA's built-in HTTP server for the web UI. The OpenHost router
+# terminates TLS externally and reverse-proxies to this port over
+# plaintext HTTP, so ENiGMA's own HTTPS is left disabled.
+port = 8080
+
+# Raw TCP ports for telnet and SSH. OpenHost's rootless podman is
+# configured with ip_unprivileged_port_start=25, so ports >= 25 can
+# be bound without root. We pick high-numbered host ports so:
+#   * Telnet gets 2323 (memorable: 23 + 2300)
+#   * SSH gets 2222 (a common non-default SSH port)
+# This avoids conflict with the host's own sshd on 22 and with any
+# other OpenHost app that wants low ports.
+[[ports]]
+label = "telnet"
+container_port = 8888
+host_port = 2323
+
+[[ports]]
+label = "ssh"
+container_port = 8889
+host_port = 2222
+
+[resources]
+# ENiGMA is light — a single-node board with a handful of users
+# comfortably fits in 256MB. Give ourselves headroom for busy nights.
+memory_mb = 512
+cpu_millicores = 500
+
+[data]
+# Everything the BBS persists (config, user DB, message base, file
+# areas, logs) lives under OPENHOST_APP_DATA_DIR.
+app_data = true
