@@ -46,16 +46,18 @@ RUN git clone https://github.com/NuSkooler/enigma-bbs.git /enigma-bbs \
 WORKDIR /enigma-bbs
 RUN npm install --production
 
-# ENiGMA's default-config generator runs via ``./oputil.js config new``
-# and is interactive. Start the main process briefly so it creates the
-# on-disk defaults under ./config/, then stash them for the entrypoint
-# to seed on first run. We kill node as soon as the default files
-# appear, which keeps this step quick (<10s).
+# Stage the default mods, art, and any bundled config fragments for
+# the entrypoint to copy into OPENHOST_APP_DATA_DIR on first run.
+# ENiGMA's ``./oputil.js config new`` is interactive, so we don't run
+# it here — the entrypoint writes its own starter ``config.hjson``
+# that relies on ENiGMA's compiled-in defaults for anything not
+# explicitly set. The upstream ``config/`` dir in the checkout is
+# typically almost empty (just a few asset files); we copy it anyway
+# so any future additions carry through.
 RUN mkdir -p /enigma-pre/config /enigma-pre/mods /enigma-pre/art \
-    && cp -rp mods/* /enigma-pre/mods/ \
-    && cp -rp art/* /enigma-pre/art/ \
-    && (cd config && ls -la) \
-    && cp -rp config/* /enigma-pre/config/ 2>/dev/null || true
+    && cp -rp mods/. /enigma-pre/mods/ \
+    && cp -rp art/. /enigma-pre/art/ \
+    && cp -rp config/. /enigma-pre/config/ 2>/dev/null || true
 
 
 # ---------------------------------------------------------------------------
