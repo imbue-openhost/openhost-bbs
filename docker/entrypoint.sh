@@ -135,10 +135,9 @@ if [ ! -f "${SSH_HOST_KEY}" ]; then
 fi
 
 # -----------------------------------------------------------------
-# config.hjson and the first sysop account.
+# Starter config.hjson + first-run README.
 # -----------------------------------------------------------------
 CONFIG_FILE="${DATA_DIR}/config/config.hjson"
-SYSOP_PASSWORD_FILE="${DATA_DIR}/config/sysop-password.txt"
 
 if [ ! -f "${CONFIG_FILE}" ]; then
     echo "[bbs] writing starter config.hjson"
@@ -252,7 +251,7 @@ HJSON
     # non-interactive "user add" command — the first user to register
     # via telnet/SSH (with the default newUserNames = ["new", "apply"])
     # becomes user ID 1, which is the sysop.
-    cat > "${DATA_DIR}/config/FIRST-RUN-README.txt" <<EOF
+    cat > "${DATA_DIR}/config/first-run-readme.txt" <<EOF
 ENiGMA½ BBS first-run setup
 ---------------------------
 
@@ -276,7 +275,7 @@ To list all users:
 
 Delete this file once setup is complete.
 EOF
-    chmod 644 "${DATA_DIR}/config/FIRST-RUN-README.txt"
+    chmod 644 "${DATA_DIR}/config/first-run-readme.txt"
 fi
 
 echo "[bbs] setup done — handing off to ENiGMA"

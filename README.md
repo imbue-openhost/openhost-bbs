@@ -17,7 +17,7 @@ From the OpenHost dashboard, add app with the repo URL:
 https://github.com/imbue-openhost/openhost-bbs
 ```
 
-Grant the permissions it asks for (`app_data` — persistent storage for the user database, message base, and file areas). First boot takes a minute or two while it generates default themes and your sysop account.
+Grant the permissions it asks for (`app_data` — persistent storage for the user database, message base, and file areas). First boot takes a minute or two while it seeds default themes, menus, and config.
 
 ## Claiming your sysop account
 
@@ -41,7 +41,7 @@ On first deploy:
 
 3. Follow the new-user application — pick your sysop username, password, real name, etc.
 
-4. You're logged in as sysop. Read `FIRST-RUN-README.txt` inside the app data dir for a reminder of these steps, and delete it once you've claimed the account.
+4. You're logged in as sysop. Read `first-run-readme.txt` inside the app data dir for a reminder of these steps, and delete it once you've claimed the account.
 
 Any later registrations become regular users with the default `users` group. Promote/demote users with `node /enigma-bbs/oputil.js user group <name> +sysops` from inside the container.
 
@@ -54,7 +54,7 @@ A few environment variables are baked into the generated starter config:
 | Variable | Default | Notes |
 |---|---|---|
 | `BBS_BOARD_NAME` | `OpenHost BBS` | Shown at the login banner |
-| `BBS_SYSOP_NAME` | `Sysop` | Real name for the sysop account |
+| `BBS_SYSOP_NAME` | `Sysop` | Display name of the sysop on menus (different from the sysop's BBS username, which you pick when you register) |
 | `BBS_SYSOP_LOCATION` | `cyberspace` | Shown on menus |
 | `BBS_SYSOP_EMAIL` | `sysop@example.com` | For outbound mail |
 | `BBS_DESCRIPTION` | `A BBS running on OpenHost` | One-line about |
@@ -68,10 +68,11 @@ ENiGMA expects to write to a handful of directories inside its install tree (`co
 
 ```
 $OPENHOST_APP_DATA_DIR/
-├── config/            # config.hjson, SSH host keys, TLS cert material
+├── config/            # config.hjson, SSH host keys, menu hjsons
 │   ├── config.hjson
+│   ├── menus/<board>-main.hjson (+ include fragments)
 │   ├── security/ssh_host_key.pem
-│   └── sysop-password.txt   # delete after first login
+│   └── first-run-readme.txt   # delete after claiming sysop
 ├── db/                # SQLite: users, messages, file base, stats
 ├── logs/              # rotating app log
 ├── filebase/          # hosted file areas
@@ -99,4 +100,4 @@ The data dir is preserved across upgrades. Only the immutable install tree gets 
 
 - `unrar-free` in Debian is lighter than the proprietary `unrar`; users uploading RAR5 archives may run into decompression errors. Swap to `unrar` if you can.
 - The BBS binds raw TCP on the host's public IP. If you want telnet/SSH accessible only from a VPN, firewall the OpenHost host ports accordingly.
-- First-run sysop password generation writes the plaintext password to a file. Delete the file after you log in once; otherwise the first person with filesystem access walks in with sysop credentials.
+- There's a first-to-register-wins window where anyone reaching the BBS before you can grab the sysop account. Deploy and claim immediately, or block port 2323/2222 at the firewall until you've registered.
