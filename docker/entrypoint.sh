@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
 # Entrypoint for the OpenHost-packaged ENiGMA½ BBS.
 #
-# On first run, this script generates a fresh config (using a random
-# sysop password it also writes to sysop-password.txt) and seeds the
-# writable ENiGMA directories from the build-time templates. On
-# subsequent runs, it's a no-op and just execs ENiGMA.
-#
-# All mutable state lives under OPENHOST_APP_DATA_DIR. The ENiGMA
-# install dir (/enigma-bbs) is treated as read-only — we replace its
-# runtime-writable subdirs with symlinks into the data dir so ENiGMA
-# can write where it expects to while the actual bytes land in the
-# container's persistent mount.
+# Each setup step below is idempotent and gated on a specific file,
+# not on a single "first run" flag. That means if we add a new step
+# (e.g. generate a new config fragment ENiGMA started requiring) in a
+# later release, existing installs pick it up on next restart without
+# losing their user data.
 
 set -euo pipefail
 
@@ -25,44 +20,24 @@ echo "[bbs] data dir: ${DATA_DIR}"
 
 mkdir -p "${DATA_DIR}"
 
-# These are the dirs ENiGMA writes to at runtime. We symlink each one
-# back into the install tree so the code finds them at their expected
-# paths while the bytes actually live under the data dir.
-#   config:    config.hjson + (optional) TLS material + SSH host keys
-#   db:        SQLite databases (users, messages, file base, stats)
-#   logs:      rotating app log
-#   filebase:  uploaded + hosted file areas
-#   mods:      site-local mod overrides (seeded from staging on first
-#              run so upstream examples aren't lost)
-#   art:       themes and ANSI art (seeded from staging too)
+# -----------------------------------------------------------------
+# Runtime-writable dirs: symlinked from the install tree to the
+# persistent data dir.
+# -----------------------------------------------------------------
 RUNTIME_DIRS=(config db logs filebase mods art)
-
 for d in "${RUNTIME_DIRS[@]}"; do
     host_path="${DATA_DIR}/${d}"
     mkdir -p "${host_path}"
-
-    # If the in-image subdir already exists (it will for
-    # config/mods/art — they're part of the upstream checkout) drop it
-    # so the symlink step below can replace it. That's safe because
-    # anything worth keeping is in the staging copy we lifted during
-    # image build.
     if [ -e "${BBS_ROOT}/${d}" ] && [ ! -L "${BBS_ROOT}/${d}" ]; then
         rm -rf "${BBS_ROOT}/${d}"
     fi
-    rm -f "${BBS_ROOT}/${d}"  # if it was already a (possibly stale) symlink
+    rm -f "${BBS_ROOT}/${d}"
     ln -s "${host_path}" "${BBS_ROOT}/${d}"
 done
 
-# ----------------------------------------------------------------------
-# First-run seeding
-# ----------------------------------------------------------------------
-
-# Determine "first run" by the presence of the main config file. If
-# someone deletes it manually to force a re-seed, that's fine — we'll
-# rebuild the starter config and they'll get a new random sysop
-# password.
-CONFIG_FILE="${DATA_DIR}/config/config.hjson"
-
+# -----------------------------------------------------------------
+# Seed config, mods, art from staging if empty.
+# -----------------------------------------------------------------
 seed_from_staging() {
     local name=$1
     local src="${BBS_STAGING}/${name}"
@@ -72,33 +47,36 @@ seed_from_staging() {
         cp -rp "${src}/." "${dst}/"
     fi
 }
+for d in config mods art; do
+    seed_from_staging "${d}"
+done
 
-if [ ! -f "${CONFIG_FILE}" ]; then
-    echo "[bbs] first run — generating starter config + sysop password"
-
-    # Seed config/mods/art from the build-time templates so ENiGMA's
-    # default themes, default mods, and default config fragments
-    # (other than config.hjson itself) are available out of the box.
-    for d in config mods art; do
-        seed_from_staging "${d}"
-    done
-
-    # Assemble the menu file set by copying the upstream menu
-    # templates into config/menus/ with per-board filenames. This
-    # mirrors what ``./oputil.js config new`` does internally; we do
-    # it by hand because oputil is interactive and can't be driven
-    # from a non-TTY entrypoint. Keep ``board_slug`` aligned with the
-    # ``general.menuFile`` path we write into config.hjson below.
-    BOARD_NAME_SLUG=$(echo "${BBS_BOARD_NAME:-OpenHost BBS}" \
+# -----------------------------------------------------------------
+# Board-name-derived slug used for menu filenames. Must match what
+# ENiGMA's oputil would generate for the same board name — see
+# core/oputil/oputil_config.js's sanatizeFilename + substitutions.
+# -----------------------------------------------------------------
+board_slug() {
+    echo "${1}" \
         | tr '[:upper:]' '[:lower:]' \
-        | sed 's/[^a-z0-9_-]\+/_/g; s/_\+/_/g; s/^_//; s/_$//')
-    [ -z "${BOARD_NAME_SLUG}" ] && BOARD_NAME_SLUG="openhost_bbs"
-    MENUS_DIR="${DATA_DIR}/config/menus"
+        | sed 's/[^a-z0-9_-]\+/_/g; s/_\+/_/g; s/^_//; s/_$//'
+}
+BOARD_NAME_SLUG=$(board_slug "${BBS_BOARD_NAME:-OpenHost BBS}")
+[ -z "${BOARD_NAME_SLUG}" ] && BOARD_NAME_SLUG="openhost_bbs"
+
+# -----------------------------------------------------------------
+# Menu file assembly.
+# Gated on the main menu file's existence, independent of
+# config.hjson. This means existing installs that somehow ended up
+# with a config but no menus will self-heal on next restart.
+# -----------------------------------------------------------------
+MENUS_DIR="${DATA_DIR}/config/menus"
+MAIN_MENU_FILE="${MENUS_DIR}/${BOARD_NAME_SLUG}-main.hjson"
+
+if [ ! -f "${MAIN_MENU_FILE}" ]; then
+    echo "[bbs] assembling menu files under ${MENUS_DIR}"
     mkdir -p "${MENUS_DIR}"
 
-    # Copy the include files (everything except main.in.hjson) and
-    # remember their on-disk names so main.hjson's %INCLUDE_FILES%
-    # placeholder can be filled in.
     INCLUDE_TEMPLATES=(
         message_base.in.hjson
         private_mail.in.hjson
@@ -111,38 +89,28 @@ if [ ! -f "${CONFIG_FILE}" ]; then
     INCLUDE_NAMES=()
     for tpl in "${INCLUDE_TEMPLATES[@]}"; do
         out_name="${BOARD_NAME_SLUG}-${tpl%.in.hjson}.hjson"
+        # -n: don't clobber if it already exists. Operator edits win.
         cp -n "${BBS_ROOT}/misc/menu_templates/${tpl}" "${MENUS_DIR}/${out_name}"
         INCLUDE_NAMES+=("${out_name}")
     done
 
-    # Build the main menu by substituting %INCLUDE_FILES% in the
-    # upstream template. Match oputil's substitution exactly: the
-    # replacement is the list of include filenames joined by a
-    # newline + two tabs, so the resulting hjson is valid.
-    #
-    # We do the substitution with awk because bash's parameter-
-    # expansion can't handle multi-line replacements cleanly (escape
-    # hell) and we'd rather not pull python3 into the runtime just
-    # for this.
-    MAIN_OUT="${MENUS_DIR}/${BOARD_NAME_SLUG}-main.hjson"
     MAIN_TEMPLATE="${BBS_ROOT}/misc/menu_templates/main.in.hjson"
 
-    # Build include block as a real multi-line string.
+    # Build the include block — list of include filenames joined by
+    # newline + two tabs — and substitute for %INCLUDE_FILES% in
+    # main.in.hjson, matching what ``oputil config new`` does.
     INCLUDE_BLOCK=""
     for inc in "${INCLUDE_NAMES[@]}"; do
         if [ -z "${INCLUDE_BLOCK}" ]; then
             INCLUDE_BLOCK="${inc}"
         else
-            # Literal tab characters for indentation inside the
-            # hjson array.
             INCLUDE_BLOCK=$(printf '%s\n\t\t%s' "${INCLUDE_BLOCK}" "${inc}")
         fi
     done
     export INCLUDE_BLOCK
+
     awk '
         /%INCLUDE_FILES%/ {
-            # Split the current line at the placeholder and emit the
-            # block from the env var between the two halves.
             idx = index($0, "%INCLUDE_FILES%")
             printf "%s", substr($0, 1, idx - 1)
             printf "%s", ENVIRON["INCLUDE_BLOCK"]
@@ -150,14 +118,35 @@ if [ ! -f "${CONFIG_FILE}" ]; then
             next
         }
         { print }
-    ' "${MAIN_TEMPLATE}" > "${MAIN_OUT}"
+    ' "${MAIN_TEMPLATE}" > "${MAIN_MENU_FILE}"
+fi
 
-    # Generate a random sysop password and stash it where the operator
-    # can find it after deploy. We don't print it to stdout because the
-    # OpenHost build log is surfaced in the UI and we don't want the
-    # password leaked there.
+# -----------------------------------------------------------------
+# SSH host key.
+# -----------------------------------------------------------------
+SSH_HOST_KEY="${DATA_DIR}/config/security/ssh_host_key.pem"
+if [ ! -f "${SSH_HOST_KEY}" ]; then
+    echo "[bbs] generating SSH host key"
+    mkdir -p "${DATA_DIR}/config/security"
+    ssh-keygen -q -t ed25519 -N "" -m pem \
+        -f "${SSH_HOST_KEY}" \
+        -C "openhost-bbs-$(date +%Y%m%d)"
+    chmod 600 "${SSH_HOST_KEY}"
+fi
+
+# -----------------------------------------------------------------
+# config.hjson and the first sysop account.
+# -----------------------------------------------------------------
+CONFIG_FILE="${DATA_DIR}/config/config.hjson"
+SYSOP_PASSWORD_FILE="${DATA_DIR}/config/sysop-password.txt"
+
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "[bbs] writing starter config.hjson"
+
+    # Random sysop password stashed at a file operators can grep for
+    # after deploy. Not printed to stdout because the OpenHost UI
+    # surfaces build logs.
     SYSOP_PASSWORD=$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)
-    SYSOP_PASSWORD_FILE="${DATA_DIR}/config/sysop-password.txt"
     umask 077
     cat > "${SYSOP_PASSWORD_FILE}" <<EOF
 ENiGMA½ sysop login
@@ -173,13 +162,6 @@ EOF
     chmod 600 "${SYSOP_PASSWORD_FILE}"
     umask 022
 
-    # Write a minimal config.hjson. We avoid `oputil.js config new`
-    # (interactive) and instead emit a small valid config that relies
-    # on ENiGMA's built-in defaults for everything unspecified.
-    #
-    # Ports inside the container: telnet 8888, ssh 8889 (picked high so
-    # they don't need extra capabilities). The openhost.toml maps these
-    # to low-numbered host ports.
     cat > "${CONFIG_FILE}" <<HJSON
 {
     //  ENiGMA 1/2 BBS — generated by openhost-bbs entrypoint.sh
@@ -188,8 +170,10 @@ EOF
     general: {
         boardName: "${BBS_BOARD_NAME:-OpenHost BBS}"
         prettyBoardName: "|09Open|15Host |13BBS"
-        // Path to the main menu file the entrypoint assembled from
-        // the upstream menu_templates on first run.
+        //  Path to the main menu file the entrypoint assembled
+        //  from the upstream menu_templates. Must live where
+        //  paths.config (below) plus "/menus" points, so ENiGMA
+        //  can resolve includes relative to it.
         menuFile: "/enigma-bbs/config/menus/${BOARD_NAME_SLUG}-main.hjson"
         sysOp: {
             username: "sysop"
@@ -210,8 +194,6 @@ EOF
         ssh: {
             enabled: true
             port: 8889
-            //  A fresh Ed25519 host key is generated on first boot
-            //  (see the entrypoint), living under config/security/.
             privateKeyPem: /enigma-bbs/config/security/ssh_host_key.pem
             privateKeyPass: ""
             algorithms: {
@@ -255,11 +237,11 @@ EOF
 
     contentServers: {
         web: {
-            // HTTP enabled on 8080 so the OpenHost router (which
-            // terminates TLS externally and proxies http-to-http
-            // internally) has a real backend to hit. HTTPS is
-            // disabled here — certificate provisioning is the
-            // router's job, not ENiGMA's.
+            //  HTTP enabled on 8080 so the OpenHost router (which
+            //  terminates TLS externally and proxies http-to-http
+            //  internally) has a real backend to hit. HTTPS is
+            //  disabled here — certificate provisioning is the
+            //  router's job, not ENiGMA's.
             http: {
                 enabled: true
                 port: 8080
@@ -271,8 +253,7 @@ EOF
     }
 
     paths: {
-        //  Pins runtime paths to the locations the entrypoint
-        //  symlinks. Useful if someone moves the install dir.
+        //  Pinned runtime paths (matching the entrypoint's symlinks).
         config: /enigma-bbs/config/
         security: /enigma-bbs/config/security/
         mods: /enigma-bbs/mods/
@@ -285,40 +266,21 @@ EOF
 HJSON
     chmod 644 "${CONFIG_FILE}"
 
-    # Generate an Ed25519 SSH host key so ENiGMA's SSH server has an
-    # identity on first boot. We use PEM format (``-m pem``) because
-    # the node-ssh library ENiGMA uses can't parse the newer OpenSSH
-    # format that ssh-keygen emits by default.
-    mkdir -p "${DATA_DIR}/config/security"
-    if [ ! -f "${DATA_DIR}/config/security/ssh_host_key.pem" ]; then
-        echo "[bbs] generating SSH host key"
-        ssh-keygen -q -t ed25519 -N "" -m pem \
-            -f "${DATA_DIR}/config/security/ssh_host_key.pem" \
-            -C "openhost-bbs-$(date +%Y%m%d)"
-        # ssh-keygen writes a .pub next to it; ENiGMA doesn't need it
-        # but we leave it in place for operators who want to verify.
-        chmod 600 "${DATA_DIR}/config/security/ssh_host_key.pem"
-    fi
-
-    # Seed the users table with a sysop entry at the generated
-    # password. oputil.js user add is non-interactive (takes --password
-    # / --real-name flags) and sets up the row directly in the sqlite
-    # DB that config/paths points at.
+    # Bootstrap the sysop account in the sqlite user DB. oputil.js
+    # user add is non-interactive when given --password.
     echo "[bbs] creating sysop user"
     if ! node /enigma-bbs/oputil.js user add sysop \
         --password "${SYSOP_PASSWORD}" \
         --real-name "${BBS_SYSOP_NAME:-Sysop}" \
         2>&1 | tee -a "${DATA_DIR}/logs/sysop-bootstrap.log"; then
-        echo "[bbs] WARNING: sysop user creation failed — you can retry with:" >&2
-        echo "[bbs]   podman exec <container> node oputil.js user add sysop --password ... --real-name ..." >&2
+        echo "[bbs] WARNING: sysop user creation failed — you can retry later with:" >&2
+        echo "[bbs]   oputil.js user add sysop --password ... --real-name ..." >&2
     fi
-
-    echo "[bbs] first-run setup done."
     echo "[bbs] sysop password at: ${SYSOP_PASSWORD_FILE}"
-else
-    echo "[bbs] existing config found, starting ENiGMA"
 fi
 
-# Hand off to the command (default: node main.js). exec so signals
-# reach the Node process directly — no pm2, no bash between us and it.
+echo "[bbs] setup done — handing off to ENiGMA"
+
+# exec so signals reach the Node process directly — no pm2, no bash
+# between us and it.
 exec "$@"
