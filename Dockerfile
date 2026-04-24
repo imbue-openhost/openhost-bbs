@@ -16,7 +16,7 @@
 #   * No `VOLUME` declarations — the openhost manifest decides the
 #     bind-mount scheme.
 
-FROM node:20-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -44,7 +44,13 @@ RUN git clone https://github.com/NuSkooler/enigma-bbs.git /enigma-bbs \
     && rm -rf .git
 
 WORKDIR /enigma-bbs
-RUN npm install --production
+# --omit=dev: skip devDependencies (modern equivalent of --production).
+# --ignore-scripts: skip postinstall/prepare scripts. Specifically
+# needed because ENiGMA's package.json declares a `prepare: husky`
+# script for the maintainer's git hooks, and husky isn't available in
+# a --omit=dev install → npm errors out. We don't need git hooks in
+# a runtime image anyway.
+RUN npm install --omit=dev --ignore-scripts
 
 # Stage the default mods, art, and any bundled config fragments for
 # the entrypoint to copy into OPENHOST_APP_DATA_DIR on first run.
@@ -64,7 +70,7 @@ RUN mkdir -p /enigma-pre/config /enigma-pre/mods /enigma-pre/art \
 # Final (thin) image
 # ---------------------------------------------------------------------------
 
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
