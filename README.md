@@ -19,27 +19,31 @@ https://github.com/imbue-openhost/openhost-bbs
 
 Grant the permissions it asks for (`app_data` — persistent storage for the user database, message base, and file areas). First boot takes a minute or two while it generates default themes and your sysop account.
 
-## Logging in for the first time
+## Claiming your sysop account
 
-The BBS generates a random sysop password on first run and writes it to:
+ENiGMA has no non-interactive "create user" command, so the first-run entrypoint doesn't pre-create an admin for you. Instead, the first user to register through the new-user flow becomes user ID 1, which is the sysop.
 
-```
-/data/app_data/bbs/config/sysop-password.txt
-```
+On first deploy:
 
-inside the container. To read it, open a browser to the OpenHost file-browser app (or SSH in and `cat` the file) and grab the password. Then:
+1. Connect via telnet:
 
-```
-telnet <your-zone> 2323
-```
+   ```
+   telnet <your-zone> 2323
+   ```
 
-or
+   or SSH:
 
-```
-ssh -p 2222 sysop@<your-zone>
-```
+   ```
+   ssh -p 2222 new@<your-zone>
+   ```
 
-Log in as `sysop` with the generated password, use the built-in "change password" menu, and **delete the `sysop-password.txt` file**.
+2. At the username prompt, enter `new` (or `apply`). These names are reserved by ENiGMA for kicking off new-user registration.
+
+3. Follow the new-user application — pick your sysop username, password, real name, etc.
+
+4. You're logged in as sysop. Read `FIRST-RUN-README.txt` inside the app data dir for a reminder of these steps, and delete it once you've claimed the account.
+
+Any later registrations become regular users with the default `users` group. Promote/demote users with `node /enigma-bbs/oputil.js user group <name> +sysops` from inside the container.
 
 ## Customising
 
